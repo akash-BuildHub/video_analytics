@@ -14,6 +14,7 @@ interface UploadEntry {
   uploadDate: string;
   personCount: number;
   status: "completed" | "processing" | "failed";
+  processedVideo?: string;
 }
 
 interface RecentUploadsTableProps {
@@ -35,6 +36,7 @@ export function RecentUploadsTable({ uploads, onView, onDelete, deletingId }: Re
             <TableHead className="text-xs">Video Name</TableHead>
             <TableHead className="text-xs">Upload Date</TableHead>
             <TableHead className="text-xs text-right">Person Count</TableHead>
+            <TableHead className="text-xs">Processed Video</TableHead>
             <TableHead className="text-xs">Status</TableHead>
           </TableRow>
         </TableHeader>
@@ -44,6 +46,17 @@ export function RecentUploadsTable({ uploads, onView, onDelete, deletingId }: Re
               <TableCell className="font-mono text-sm">{upload.videoName}</TableCell>
               <TableCell className="text-sm text-muted-foreground">{upload.uploadDate}</TableCell>
               <TableCell className="text-sm font-mono text-right">{upload.personCount}</TableCell>
+              <TableCell>
+                {upload.processedVideo ? (
+                  <Button asChild size="sm" variant="secondary">
+                    <a href={upload.processedVideo} target="_blank" rel="noreferrer">
+                      Play
+                    </a>
+                  </Button>
+                ) : (
+                  <span className="text-xs text-muted-foreground">Not available</span>
+                )}
+              </TableCell>
               <TableCell className="flex items-center gap-2">
                 <Button size="sm" variant="outline" onClick={() => onView(upload.id)}>
                   View
@@ -61,7 +74,7 @@ export function RecentUploadsTable({ uploads, onView, onDelete, deletingId }: Re
           ))}
           {uploads.length === 0 && (
             <TableRow>
-              <TableCell colSpan={4} className="text-sm text-muted-foreground py-6 text-center">
+              <TableCell colSpan={5} className="text-sm text-muted-foreground py-6 text-center">
                 No uploads available yet.
               </TableCell>
             </TableRow>

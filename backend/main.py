@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import os
 import shutil
 import json
+from glob import glob
 from datetime import datetime, timedelta
 from uuid import uuid4
 from src.person_count.count import process_video
@@ -74,6 +75,25 @@ def append_video_record(video_name, person_count, status, input_path="", output_
     save_analytics_records(records)
 
 
+def resolve_processed_video_path(record):
+    output_path = record.get("output_path", "")
+    if output_path and os.path.exists(output_path):
+        return f"/outputs/{os.path.basename(output_path)}"
+
+    # Best effort fallback for legacy records without output_path metadata.
+    video_name = record.get("video_name", "")
+    video_stem = os.path.splitext(os.path.basename(video_name))[0]
+    if not video_stem:
+        return ""
+
+    pattern = os.path.join(OUTPUT_DIR, f"processed_*{video_stem}*.mp4")
+    candidates = sorted(glob(pattern), key=os.path.getmtime, reverse=True)
+    if not candidates:
+        return ""
+
+    return f"/outputs/{os.path.basename(candidates[0])}"
+
+
 def build_analytics_payload():
     records = load_analytics_records()
 
@@ -132,6 +152,7 @@ def build_analytics_payload():
             "uploadDate": upload_date,
             "personCount": int(r.get("person_count", 0)),
             "status": r.get("status", "completed"),
+            "processedVideo": resolve_processed_video_path(r),
         })
 
     return {
@@ -225,10 +246,7 @@ async def get_video_details(video_id: str):
     if not record:
         raise HTTPException(status_code=404, detail="Video record not found.")
 
-    output_path = record.get("output_path", "")
-    processed_video = ""
-    if output_path:
-        processed_video = f"/outputs/{os.path.basename(output_path)}"
+    processed_video = resolve_processed_video_path(record)
 
     created_at = record.get("created_at", "")
     upload_date = created_at.split("T")[0] if "T" in created_at else created_at

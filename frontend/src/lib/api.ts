@@ -26,6 +26,7 @@ interface AnalyticsData {
     uploadDate: string;
     personCount: number;
     status: "completed" | "processing" | "failed";
+    processedVideo?: string;
   }[];
 }
 
