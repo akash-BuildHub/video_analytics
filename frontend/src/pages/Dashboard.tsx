@@ -20,39 +20,114 @@ interface SelectedVideoHourlyEntry {
   uploads: number;
 }
 
-function buildSelectedVideoHourlyData(video: VideoDetails): SelectedVideoHourlyEntry[] {
+type TimelineGranularity = "seconds" | "minutes" | "hours";
+
+interface SelectedVideoTimeline {
+  data: SelectedVideoHourlyEntry[];
+  ticks: number[];
+  endSecond: number;
+  granularity: TimelineGranularity;
+}
+
+function pickBucketSizeSeconds(durationSeconds: number): { bucketSizeSeconds: number; granularity: TimelineGranularity } {
+  if (durationSeconds <= 10 * 60) {
+    return { bucketSizeSeconds: 1, granularity: "seconds" };
+  }
+  if (durationSeconds <= 2 * 60 * 60) {
+    return { bucketSizeSeconds: 60, granularity: "minutes" };
+  }
+  if (durationSeconds <= 12 * 60 * 60) {
+    return { bucketSizeSeconds: 30 * 60, granularity: "minutes" };
+  }
+  if (durationSeconds <= 48 * 60 * 60) {
+    return { bucketSizeSeconds: 60 * 60, granularity: "hours" };
+  }
+  return { bucketSizeSeconds: 2 * 60 * 60, granularity: "hours" };
+}
+
+function buildTimelineTicks(endSecond: number, bucketSizeSeconds: number): number[] {
+  if (endSecond <= 0) {
+    return [0];
+  }
+
+  const totalBuckets = Math.max(1, Math.ceil(endSecond / bucketSizeSeconds));
+  const targetTickCount = 10;
+  const bucketsPerTick = Math.max(1, Math.ceil(totalBuckets / targetTickCount));
+  const tickStep = bucketsPerTick * bucketSizeSeconds;
+
+  const ticks: number[] = [];
+  for (let t = 0; t <= endSecond; t += tickStep) {
+    ticks.push(t);
+  }
+  if (ticks[ticks.length - 1] !== endSecond) {
+    ticks.push(endSecond);
+  }
+  return ticks;
+}
+
+function buildSelectedVideoTimeline(video: VideoDetails): SelectedVideoTimeline {
   const timeline = video.details.counts_per_second ?? [];
   const maxSecondFromData = timeline.length > 0 ? Math.max(...timeline.map((p) => p.second)) : 0;
   const durationSeconds = Math.max(
     maxSecondFromData,
     Math.ceil(video.details.duration_seconds ?? 0),
   );
+  const { bucketSizeSeconds, granularity } = pickBucketSizeSeconds(durationSeconds);
+  const endSecond = Math.max(durationSeconds, 0);
 
-  if (timeline.length === 0) {
-    return Array.from({ length: durationSeconds + 1 }, (_, second) => ({
-      second,
-      personCount: video.personCount,
-      uploads: 1,
-    }));
+  const bucketAccumulator = new Map<number, { sum: number; count: number }>();
+  const countBySecond = new Map<number, number>();
+  for (const point of timeline) {
+    countBySecond.set(point.second, point.count);
   }
 
-  const countBySecond = new Map<number, number>();
-  timeline.forEach((point) => {
-    countBySecond.set(point.second, point.count);
-  });
-
-  let lastKnown = 0;
-  return Array.from({ length: durationSeconds + 1 }, (_, second) => {
+  let lastKnown = timeline.length > 0 ? timeline[0].count : video.personCount;
+  for (let second = 0; second <= endSecond; second += 1) {
     const current = countBySecond.get(second);
     if (current !== undefined) {
       lastKnown = current;
     }
-    return {
+    const bucketStart = Math.floor(second / bucketSizeSeconds) * bucketSizeSeconds;
+    const bucket = bucketAccumulator.get(bucketStart) ?? { sum: 0, count: 0 };
+    bucket.sum += current ?? lastKnown;
+    bucket.count += 1;
+    bucketAccumulator.set(bucketStart, bucket);
+  }
+
+  const data = Array.from(bucketAccumulator.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([second, bucket]) => ({
       second,
-      personCount: current ?? lastKnown,
+      personCount: bucket.count > 0 ? Math.round(bucket.sum / bucket.count) : 0,
       uploads: 1,
-    };
-  });
+    }));
+
+  return {
+    data,
+    ticks: buildTimelineTicks(endSecond, bucketSizeSeconds),
+    endSecond,
+    granularity,
+  };
+}
+
+function formatTimelineTick(value: number, granularity: TimelineGranularity): string {
+  if (granularity === "seconds") {
+    return `${value}s`;
+  }
+  if (granularity === "minutes") {
+    return `${Math.round(value / 60)}m`;
+  }
+  return `${Math.round(value / 3600)}h`;
+}
+
+function formatTimelineTooltip(value: number, granularity: TimelineGranularity): string {
+  if (granularity === "seconds") {
+    return `Second ${Math.round(value)}`;
+  }
+  if (granularity === "minutes") {
+    return `Minute ${Math.round(value / 60)}`;
+  }
+  return `Hour ${Math.round(value / 3600)}`;
 }
 
 export default function Dashboard() {
@@ -143,26 +218,15 @@ export default function Dashboard() {
     }
   };
 
-  const hourlyChartData = useMemo(() => {
-    if (!selectedVideo) {
-      return analytics?.hourly_analytics ?? [];
-    }
-    return buildSelectedVideoHourlyData(selectedVideo);
-  }, [analytics?.hourly_analytics, selectedVideo]);
+  const selectedVideoTimeline = useMemo(
+    () => (selectedVideo ? buildSelectedVideoTimeline(selectedVideo) : null),
+    [selectedVideo],
+  );
 
-  const selectedVideoSecondTicks = useMemo(() => {
-    if (!selectedVideo) {
-      return undefined;
-    }
-    return (hourlyChartData as SelectedVideoHourlyEntry[]).map((item) => item.second);
-  }, [hourlyChartData, selectedVideo]);
-
-  const selectedVideoTimelineEnd = useMemo(() => {
-    if (!selectedVideoSecondTicks || selectedVideoSecondTicks.length === 0) {
-      return undefined;
-    }
-    return selectedVideoSecondTicks[selectedVideoSecondTicks.length - 1];
-  }, [selectedVideoSecondTicks]);
+  const hourlyChartData = useMemo(
+    () => (selectedVideoTimeline ? selectedVideoTimeline.data : (analytics?.hourly_analytics ?? [])),
+    [analytics?.hourly_analytics, selectedVideoTimeline],
+  );
 
   return (
     <div className="space-y-6">
@@ -224,15 +288,25 @@ export default function Dashboard() {
         <HourlyAnalyticsChart
           data={hourlyChartData}
           title={selectedVideo ? `Hourly Analytics (${selectedVideo.videoName})` : "Hourly Analytics"}
-          xAxisLabel={selectedVideo ? "Video Timeline" : "Duration"}
+          xAxisLabel={
+            selectedVideoTimeline
+              ? `Video Timeline (${selectedVideoTimeline.granularity})`
+              : "Duration"
+          }
           xDataKey={selectedVideo ? "second" : "hour"}
           xAxisType={selectedVideo ? "number" : "category"}
-          xTicks={selectedVideo ? selectedVideoSecondTicks : undefined}
-          xAxisInterval={selectedVideo ? 0 : "preserveEnd"}
-          xDomain={selectedVideoTimelineEnd !== undefined ? [0, selectedVideoTimelineEnd] : undefined}
-          xTickFormatter={selectedVideo ? (value) => `${value}` : undefined}
+          xTicks={selectedVideoTimeline?.ticks}
+          xAxisInterval={selectedVideo ? "preserveEnd" : "preserveEnd"}
+          xDomain={selectedVideoTimeline ? [0, selectedVideoTimeline.endSecond] : undefined}
+          xTickFormatter={
+            selectedVideoTimeline
+              ? (value) => formatTimelineTick(Number(value), selectedVideoTimeline.granularity)
+              : undefined
+          }
           tooltipLabelFormatter={
-            selectedVideo ? (value) => `Second ${Math.round(Number(value) || 0)}` : undefined
+            selectedVideoTimeline
+              ? (value) => formatTimelineTooltip(Number(value) || 0, selectedVideoTimeline.granularity)
+              : undefined
           }
           yDataKey={selectedVideo ? "personCount" : "detections"}
           yAxisLabel={selectedVideo ? "Person Count" : "Counts"}
