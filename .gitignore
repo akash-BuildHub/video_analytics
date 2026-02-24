@@ -5,11 +5,15 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+*.tmp
 
 # Environment / secrets
 .env
 .env.*
 !.env.example
+frontend/.env.local
+backend/.env
+backend/.env.*
 
 # Logs
 *.log
@@ -23,6 +27,7 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+.python-version
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -31,18 +36,23 @@ venv/
 env/
 backend/.venv/
 backend/venv/
+backend/__pycache__/
+backend/.pytest_cache/
 
 # Backend generated files
 backend/uploads/
 backend/outputs/
 
 # Frontend
+node_modules/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 frontend/.cache/
+.eslintcache
 
 # Coverage / reports
 coverage/
 *.coverage
+.coverage*
 htmlcov/

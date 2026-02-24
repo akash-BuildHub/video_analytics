@@ -130,11 +130,31 @@ function formatTimelineTooltip(value: number, granularity: TimelineGranularity):
   return `Hour ${Math.round(value / 3600)}`;
 }
 
+function formatProcessingTime(seconds?: number): string {
+  if (!seconds || seconds <= 0) {
+    return "N/A";
+  }
+
+  const totalSeconds = Math.round(seconds);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${remainingSeconds}s`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${remainingSeconds}s`;
+  }
+  return `${remainingSeconds}s`;
+}
+
 export default function Dashboard() {
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedVideo, setSelectedVideo] = useState<VideoDetails | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const hasViewedVideo = selectedVideo !== null;
 
   const fetchAnalytics = async () => {
     try {
@@ -223,9 +243,19 @@ export default function Dashboard() {
     [selectedVideo],
   );
 
+  const zeroedHourlyAnalytics = useMemo(
+    () =>
+      (analytics?.hourly_analytics ?? []).map((entry) => ({
+        ...entry,
+        detections: 0,
+        uploads: 0,
+      })),
+    [analytics?.hourly_analytics],
+  );
+
   const hourlyChartData = useMemo(
-    () => (selectedVideoTimeline ? selectedVideoTimeline.data : (analytics?.hourly_analytics ?? [])),
-    [analytics?.hourly_analytics, selectedVideoTimeline],
+    () => (selectedVideoTimeline ? selectedVideoTimeline.data : zeroedHourlyAnalytics),
+    [selectedVideoTimeline, zeroedHourlyAnalytics],
   );
 
   return (
@@ -250,21 +280,21 @@ export default function Dashboard() {
           icon={Video}
         />
         <StatCard
-          title="Total Person Count"
-          value={loading ? "..." : (analytics?.total_persons ?? 0)}
-          change={loading ? "Loading" : "Aggregated detections"}
+          title="Processing Time"
+          value={loading ? "..." : hasViewedVideo ? formatProcessingTime(selectedVideo?.details.duration_seconds) : "0s"}
+          change={loading ? "Loading" : hasViewedVideo ? `Processed for ${selectedVideo?.videoName}` : "Click View to show analytics"}
           changeType="positive"
           icon={Users}
         />
         <StatCard
-          title="Person Count"
-          value={loading ? "..." : (selectedVideo?.personCount ?? analytics?.total_persons ?? 0)}
+          title="Total Person Count"
+          value={loading ? "..." : (hasViewedVideo ? (selectedVideo?.personCount ?? 0) : 0)}
           change={
             loading
               ? "Loading"
-              : selectedVideo
+              : hasViewedVideo && selectedVideo
                 ? `Detected in ${selectedVideo.videoName}`
-                : "Across all processed videos"
+                : "Click View to show analytics"
           }
           changeType="neutral"
           icon={Users}

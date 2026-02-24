@@ -156,6 +156,10 @@ def build_analytics_payload():
     completed_records = [r for r in records if r.get("status") == "completed"]
     total_videos = len(completed_records)
     total_persons = sum(int(r.get("person_count", 0)) for r in completed_records)
+    total_processing_time_seconds = sum(
+        float((r.get("details", {}) or {}).get("duration_seconds") or 0)
+        for r in completed_records
+    )
 
     today = datetime.utcnow().date()
     todays_detections = 0
@@ -215,6 +219,7 @@ def build_analytics_payload():
     return {
         "total_videos": total_videos,
         "total_persons": total_persons,
+        "total_processing_time_seconds": total_processing_time_seconds,
         "active_cameras": 1 if total_videos > 0 else 0,
         "todays_detections": todays_detections,
         "hourly_analytics": hourly_analytics,

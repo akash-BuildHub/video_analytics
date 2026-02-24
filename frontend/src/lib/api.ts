@@ -34,6 +34,7 @@ interface UploadJobStatus {
 interface AnalyticsData {
   total_videos: number;
   total_persons: number;
+  total_processing_time_seconds?: number;
   active_cameras: number;
   todays_detections: number;
   hourly_analytics: { hour: string; detections: number; uploads: number }[];
