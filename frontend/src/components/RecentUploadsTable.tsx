@@ -14,7 +14,7 @@ interface UploadEntry {
   uploadDate: string;
   personCount: number;
   status: "completed" | "processing" | "failed";
-  processedVideo?: string;
+  processingTimeSeconds?: number;
 }
 
 interface RecentUploadsTableProps {
@@ -25,6 +25,25 @@ interface RecentUploadsTableProps {
 }
 
 export function RecentUploadsTable({ uploads, onView, onDelete, deletingId }: RecentUploadsTableProps) {
+  const formatProcessingTime = (seconds?: number) => {
+    if (!seconds || seconds <= 0) {
+      return "N/A";
+    }
+
+    const totalSeconds = Math.round(seconds);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const remainingSeconds = totalSeconds % 60;
+
+    if (hours > 0) {
+      return `${hours}h ${minutes}m ${remainingSeconds}s`;
+    }
+    if (minutes > 0) {
+      return `${minutes}m ${remainingSeconds}s`;
+    }
+    return `${remainingSeconds}s`;
+  };
+
   return (
     <div className="bg-card rounded-lg border border-border animate-fade-in">
       <div className="p-5 border-b border-border">
@@ -36,7 +55,7 @@ export function RecentUploadsTable({ uploads, onView, onDelete, deletingId }: Re
             <TableHead className="text-xs">Video Name</TableHead>
             <TableHead className="text-xs">Upload Date</TableHead>
             <TableHead className="text-xs text-right">Person Count</TableHead>
-            <TableHead className="text-xs">Processed Video</TableHead>
+            <TableHead className="text-xs">Processing Time</TableHead>
             <TableHead className="text-xs">Status</TableHead>
           </TableRow>
         </TableHeader>
@@ -46,16 +65,8 @@ export function RecentUploadsTable({ uploads, onView, onDelete, deletingId }: Re
               <TableCell className="font-mono text-sm">{upload.videoName}</TableCell>
               <TableCell className="text-sm text-muted-foreground">{upload.uploadDate}</TableCell>
               <TableCell className="text-sm font-mono text-right">{upload.personCount}</TableCell>
-              <TableCell>
-                {upload.processedVideo ? (
-                  <Button asChild size="sm" variant="secondary">
-                    <a href={upload.processedVideo} target="_blank" rel="noreferrer">
-                      Play
-                    </a>
-                  </Button>
-                ) : (
-                  <span className="text-xs text-muted-foreground">Not available</span>
-                )}
+              <TableCell className="text-sm text-muted-foreground">
+                {formatProcessingTime(upload.processingTimeSeconds)}
               </TableCell>
               <TableCell className="flex items-center gap-2">
                 <Button size="sm" variant="outline" onClick={() => onView(upload.id)}>

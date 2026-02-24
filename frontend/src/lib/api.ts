@@ -45,6 +45,7 @@ interface AnalyticsData {
     personCount: number;
     status: "completed" | "processing" | "failed";
     processedVideo?: string;
+    processingTimeSeconds?: number;
   }[];
 }
 

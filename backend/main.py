@@ -209,6 +209,7 @@ def build_analytics_payload():
             "personCount": int(r.get("person_count", 0)),
             "status": r.get("status", "completed"),
             "processedVideo": resolve_processed_video_path(r),
+            "processingTimeSeconds": float((r.get("details", {}) or {}).get("duration_seconds") or 0),
         })
 
     return {
