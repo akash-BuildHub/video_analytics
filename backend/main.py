@@ -1,13 +1,16 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import JSONResponse, Response
-from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
+from datetime import datetime, timedelta
+from glob import glob
+from threading import RLock
+from uuid import uuid4
+import json
 import os
 import shutil
-import json
-from glob import glob
-from datetime import datetime, timedelta
-from uuid import uuid4
+
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+
 from src.person_count.count import process_video
 
 app = FastAPI()
@@ -22,57 +25,110 @@ app.add_middleware(
 UPLOAD_DIR = "uploads"
 OUTPUT_DIR = "outputs"
 ANALYTICS_STORE = os.path.join(OUTPUT_DIR, "analytics_data.json")
+FRAME_STRIDE = max(1, int(os.getenv("VIDEO_FRAME_STRIDE", "3")))
+SUPPORTED_VIDEO_EXTENSIONS = {
+    ".mp4",
+    ".avi",
+    ".mov",
+    ".mkv",
+    ".webm",
+    ".flv",
+    ".wmv",
+    ".m4v",
+    ".mpg",
+    ".mpeg",
+    ".3gp",
+    ".ts",
+    ".m2ts",
+}
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 
+records_lock = RLock()
+jobs_lock = RLock()
+JOBS = {}
+
 
 def load_analytics_records():
-    if not os.path.exists(ANALYTICS_STORE):
+    with records_lock:
+        if not os.path.exists(ANALYTICS_STORE):
+            return []
+
+        try:
+            with open(ANALYTICS_STORE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+        except json.JSONDecodeError:
+            pass
+
         return []
-
-    try:
-        with open(ANALYTICS_STORE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            if isinstance(data, list):
-                return data
-    except json.JSONDecodeError:
-        pass
-
-    return []
 
 
 def save_analytics_records(records):
-    with open(ANALYTICS_STORE, "w", encoding="utf-8") as f:
-        json.dump(records, f, ensure_ascii=True, indent=2)
+    with records_lock:
+        with open(ANALYTICS_STORE, "w", encoding="utf-8") as f:
+            json.dump(records, f, ensure_ascii=True, indent=2)
 
 
-def append_analytics_record(video_name, person_count, status):
-    records = load_analytics_records()
-    records.append({
-        "id": str(uuid4()),
-        "video_name": video_name,
-        "person_count": int(person_count),
-        "status": status,
-        "created_at": datetime.utcnow().isoformat()
-    })
-    save_analytics_records(records)
+def append_video_record(video_name, person_count, status, input_path="", output_path="", details=None, record_id=""):
+    record_id = record_id or str(uuid4())
+    with records_lock:
+        records = load_analytics_records()
+        records.append({
+            "id": record_id,
+            "video_name": video_name,
+            "person_count": int(person_count),
+            "status": status,
+            "created_at": datetime.utcnow().isoformat(),
+            "input_path": input_path,
+            "output_path": output_path,
+            "details": details or {},
+        })
+        save_analytics_records(records)
+    return record_id
 
 
-def append_video_record(video_name, person_count, status, input_path="", output_path="", details=None):
-    records = load_analytics_records()
-    records.append({
-        "id": str(uuid4()),
-        "video_name": video_name,
-        "person_count": int(person_count),
-        "status": status,
-        "created_at": datetime.utcnow().isoformat(),
-        "input_path": input_path,
-        "output_path": output_path,
-        "details": details or {},
-    })
-    save_analytics_records(records)
+def update_video_record(record_id, **updates):
+    with records_lock:
+        records = load_analytics_records()
+        updated = False
+        for record in records:
+            if record.get("id") == record_id:
+                record.update(updates)
+                updated = True
+                break
+
+        if updated:
+            save_analytics_records(records)
+
+        return updated
+
+
+def set_job_state(job_id, **updates):
+    with jobs_lock:
+        current = JOBS.get(job_id, {"job_id": job_id})
+        current.update(updates)
+        current["updated_at"] = datetime.utcnow().isoformat()
+        JOBS[job_id] = current
+
+
+def get_job_state(job_id):
+    with jobs_lock:
+        state = JOBS.get(job_id)
+        return dict(state) if state else None
+
+
+def is_supported_video_upload(file: UploadFile):
+    filename = os.path.basename(file.filename or "")
+    extension = os.path.splitext(filename)[1].lower()
+    content_type = (file.content_type or "").lower()
+    return (
+        content_type.startswith("video/")
+        or extension in SUPPORTED_VIDEO_EXTENSIONS
+    )
 
 
 def resolve_processed_video_path(record):
@@ -166,10 +222,86 @@ def build_analytics_payload():
     }
 
 
+def process_video_job(job_id, record_id, safe_name, input_path):
+    set_job_state(
+        job_id,
+        record_id=record_id,
+        video_name=safe_name,
+        status="processing",
+        progress=0,
+        frame_stride=FRAME_STRIDE,
+        started_at=datetime.utcnow().isoformat(),
+    )
+
+    def on_progress(progress, processed_frames, total_frames):
+        set_job_state(
+            job_id,
+            status="processing",
+            progress=progress,
+            processed_frames=processed_frames,
+            total_frames=total_frames,
+        )
+
+    try:
+        output_path, total_count, details = process_video(
+            input_path,
+            OUTPUT_DIR,
+            frame_stride=FRAME_STRIDE,
+            progress_callback=on_progress,
+        )
+        update_video_record(
+            record_id,
+            person_count=total_count,
+            status="completed",
+            output_path=output_path,
+            details=details,
+            completed_at=datetime.utcnow().isoformat(),
+        )
+        set_job_state(
+            job_id,
+            status="completed",
+            progress=100,
+            total_person_count=total_count,
+            processed_video=f"/outputs/{os.path.basename(output_path)}",
+            completed_at=datetime.utcnow().isoformat(),
+        )
+    except ValueError as exc:
+        update_video_record(
+            record_id,
+            person_count=0,
+            status="failed",
+            details={"error": str(exc)},
+            completed_at=datetime.utcnow().isoformat(),
+        )
+        set_job_state(
+            job_id,
+            status="failed",
+            error=str(exc),
+            completed_at=datetime.utcnow().isoformat(),
+        )
+    except Exception:
+        update_video_record(
+            record_id,
+            person_count=0,
+            status="failed",
+            details={"error": "Video processing failed."},
+            completed_at=datetime.utcnow().isoformat(),
+        )
+        set_job_state(
+            job_id,
+            status="failed",
+            error="Video processing failed.",
+            completed_at=datetime.utcnow().isoformat(),
+        )
+
+
 @app.post("/upload-video")
-async def upload_video(file: UploadFile = File(...)):
-    if not file.content_type or not file.content_type.startswith("video/"):
-        raise HTTPException(status_code=400, detail="Please upload a video file.")
+async def upload_video(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+    if not is_supported_video_upload(file):
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file type. Please upload a common video format such as MP4, AVI, MOV, MKV, WEBM, FLV, WMV, or MPEG.",
+        )
 
     safe_name = os.path.basename(file.filename or "upload_video.mp4")
     unique_input_name = f"{uuid4().hex}_{safe_name}"
@@ -178,37 +310,59 @@ async def upload_video(file: UploadFile = File(...)):
     with open(input_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    try:
-        output_path, total_count, details = process_video(input_path, OUTPUT_DIR)
-        append_video_record(
-            video_name=safe_name,
-            person_count=total_count,
-            status="completed",
-            input_path=input_path,
-            output_path=output_path,
-            details=details,
-        )
-    except ValueError as exc:
-        append_video_record(
-            video_name=safe_name,
-            person_count=0,
-            status="failed",
-            input_path=input_path,
-        )
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception:
-        append_video_record(
-            video_name=safe_name,
-            person_count=0,
-            status="failed",
-            input_path=input_path,
-        )
-        raise HTTPException(status_code=500, detail="Video processing failed.")
+    job_id = str(uuid4())
+    record_id = append_video_record(
+        video_name=safe_name,
+        person_count=0,
+        status="processing",
+        input_path=input_path,
+        record_id=job_id,
+    )
+
+    set_job_state(
+        job_id,
+        record_id=record_id,
+        video_name=safe_name,
+        status="processing",
+        progress=0,
+        frame_stride=FRAME_STRIDE,
+        started_at=datetime.utcnow().isoformat(),
+    )
+    background_tasks.add_task(process_video_job, job_id, record_id, safe_name, input_path)
 
     return JSONResponse({
-        "message": "Processing completed",
-        "total_person_count": total_count,
-        "processed_video": f"/outputs/{os.path.basename(output_path)}"
+        "message": "Video accepted for processing",
+        "job_id": job_id,
+        "status": "processing",
+        "frame_stride": FRAME_STRIDE,
+    })
+
+
+@app.get("/api/jobs/{job_id}")
+async def get_job_status(job_id: str):
+    job = get_job_state(job_id)
+    if not job:
+        records = load_analytics_records()
+        record = next((r for r in records if r.get("id") == job_id), None)
+        if not record:
+            raise HTTPException(status_code=404, detail="Job not found.")
+
+        job = {
+            "job_id": job_id,
+            "record_id": job_id,
+            "video_name": record.get("video_name", "unknown"),
+            "status": record.get("status", "failed"),
+            "progress": 100 if record.get("status") == "completed" else 0,
+            "total_person_count": int(record.get("person_count", 0)),
+            "processed_video": resolve_processed_video_path(record),
+            "error": record.get("details", {}).get("error"),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+    return JSONResponse({
+        "success": True,
+        "message": "Job status fetched successfully",
+        "data": job,
     })
 
 
@@ -268,23 +422,27 @@ async def get_video_details(video_id: str):
 
 @app.delete("/api/videos/{video_id}")
 async def delete_video(video_id: str):
-    records = load_analytics_records()
-    record_index = next((idx for idx, r in enumerate(records) if r.get("id") == video_id), None)
-    if record_index is None:
-        raise HTTPException(status_code=404, detail="Video record not found.")
+    with records_lock:
+        records = load_analytics_records()
+        record_index = next((idx for idx, r in enumerate(records) if r.get("id") == video_id), None)
+        if record_index is None:
+            raise HTTPException(status_code=404, detail="Video record not found.")
 
-    record = records[record_index]
-    input_path = record.get("input_path", "")
-    output_path = record.get("output_path", "")
+        record = records[record_index]
+        input_path = record.get("input_path", "")
+        output_path = record.get("output_path", "")
 
-    if input_path and os.path.exists(input_path):
-        os.remove(input_path)
+        if input_path and os.path.exists(input_path):
+            os.remove(input_path)
 
-    if output_path and os.path.exists(output_path):
-        os.remove(output_path)
+        if output_path and os.path.exists(output_path):
+            os.remove(output_path)
 
-    records.pop(record_index)
-    save_analytics_records(records)
+        records.pop(record_index)
+        save_analytics_records(records)
+
+    with jobs_lock:
+        JOBS.pop(video_id, None)
 
     return JSONResponse({
         "success": True,

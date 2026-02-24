@@ -1,19 +1,64 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Upload, X, FileVideo, Loader2, CheckCircle, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { uploadVideo } from "@/lib/api";
+import { Progress } from "@/components/ui/progress";
+import { getUploadJobStatus, uploadVideo } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
+
+const SUPPORTED_VIDEO_EXTENSIONS = [
+  "mp4",
+  "avi",
+  "mov",
+  "mkv",
+  "webm",
+  "flv",
+  "wmv",
+  "m4v",
+  "mpg",
+  "mpeg",
+  "3gp",
+  "ts",
+  "m2ts",
+];
+
+function isSupportedVideoFile(file: File) {
+  const extension = file.name.includes(".")
+    ? file.name.split(".").pop()?.toLowerCase() ?? ""
+    : "";
+  return file.type.startsWith("video/") || SUPPORTED_VIDEO_EXTENSIONS.includes(extension);
+}
 
 export default function UploadVideo() {
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [processedVideoUrl, setProcessedVideoUrl] = useState<string | null>(null);
+  const [processingProgress, setProcessingProgress] = useState(0);
+  const [processingSeconds, setProcessingSeconds] = useState(0);
+  const processingStartTimeRef = useRef<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  useEffect(() => {
+    if (!uploading) {
+      return;
+    }
+
+    const elapsedTimer = window.setInterval(() => {
+      setProcessingSeconds((prev) => prev + 1);
+    }, 1000);
+
+    return () => {
+      window.clearInterval(elapsedTimer);
+    };
+  }, [uploading]);
+
   const handleFileSelect = useCallback((selectedFile: File) => {
-    if (!selectedFile.type.startsWith("video/")) {
-      toast({ title: "Invalid file", description: "Please select a video file.", variant: "destructive" });
+    if (!isSupportedVideoFile(selectedFile)) {
+      toast({
+        title: "Invalid file",
+        description: "Please select a common video format (MP4, AVI, MOV, MKV, WEBM, FLV, WMV, MPEG, etc.).",
+        variant: "destructive",
+      });
       return;
     }
     setFile(selectedFile);
@@ -30,18 +75,52 @@ export default function UploadVideo() {
 
   const handleSubmit = async () => {
     if (!file) return;
+    setProcessedVideoUrl(null);
+    setProcessingProgress(0);
+    setProcessingSeconds(0);
+    processingStartTimeRef.current = Date.now();
     setUploading(true);
     try {
       const response = await uploadVideo(file);
-      setProcessedVideoUrl(response.processed_video);
       toast({
-        title: "Processing complete",
-        description: `Total person count: ${response.total_person_count}`,
+        title: "Upload accepted",
+        description: `Processing started (sampling every ${response.frame_stride} frame(s)).`,
       });
-    } catch {
+
+      while (true) {
+        const status = await getUploadJobStatus(response.job_id);
+        setProcessingProgress(status.progress ?? 0);
+
+        if (status.status === "completed") {
+          setProcessedVideoUrl(status.processed_video ?? null);
+          setProcessingProgress(100);
+          toast({
+            title: "Processing complete",
+            description: `Total person count: ${status.total_person_count ?? 0}`,
+          });
+          break;
+        }
+
+        if (status.status === "failed") {
+          throw new Error(status.error || "Video processing failed.");
+        }
+
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+      }
+
+      if (processingStartTimeRef.current) {
+        const elapsedSeconds = Math.max(
+          1,
+          Math.round((Date.now() - processingStartTimeRef.current) / 1000)
+        );
+        setProcessingSeconds(elapsedSeconds);
+      }
+    } catch (error) {
       toast({
-        title: "Upload failed",
-        description: "Could not connect to the backend. Please ensure the Python server is running.",
+        title: "Processing failed",
+        description: error instanceof Error
+          ? error.message
+          : "Could not connect to the backend. Please ensure the Python server is running.",
         variant: "destructive",
       });
     } finally {
@@ -52,6 +131,9 @@ export default function UploadVideo() {
   const clearFile = () => {
     setFile(null);
     setProcessedVideoUrl(null);
+    setProcessingProgress(0);
+    setProcessingSeconds(0);
+    processingStartTimeRef.current = null;
   };
 
   return (
@@ -59,7 +141,7 @@ export default function UploadVideo() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Upload Video</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Upload a video file for analysis. Supported formats: MP4, AVI, MOV.
+          Upload a video file for analysis. Supported formats include MP4, AVI, MOV, MKV, WEBM, FLV, WMV, and MPEG.
         </p>
       </div>
 
@@ -76,7 +158,7 @@ export default function UploadVideo() {
           <input
             ref={inputRef}
             type="file"
-            accept="video/*"
+            accept="video/*,.mp4,.avi,.mov,.mkv,.webm,.flv,.wmv,.m4v,.mpg,.mpeg,.3gp,.ts,.m2ts"
             className="hidden"
             onChange={(e) => {
               const f = e.target.files?.[0];
@@ -114,6 +196,7 @@ export default function UploadVideo() {
                   <p className="text-sm text-muted-foreground">
                     Video analysis is complete and the output has been generated successfully.
                   </p>
+                  <p className="text-sm font-medium">Processing time: {processingSeconds}s</p>
                   <Button onClick={clearFile} className="gap-2">
                     <RotateCcw className="w-4 h-4" />
                     Upload Another
@@ -137,23 +220,34 @@ export default function UploadVideo() {
               </Card>
             </>
           ) : (
-            <div className="flex gap-3">
-              <Button onClick={handleSubmit} disabled={uploading} className="gap-2">
-                {uploading ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Processing...
-                  </>
-                ) : (
-                  <>
-                    <Upload className="w-4 h-4" />
-                    Submit for Analysis
-                  </>
-                )}
-              </Button>
-              <Button variant="outline" onClick={clearFile} disabled={uploading}>
-                Cancel
-              </Button>
+            <div className="space-y-3">
+              <div className="flex gap-3">
+                <Button onClick={handleSubmit} disabled={uploading} className="gap-2">
+                  {uploading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Processing...
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-4 h-4" />
+                      Submit for Analysis
+                    </>
+                  )}
+                </Button>
+                <Button variant="outline" onClick={clearFile} disabled={uploading}>
+                  Cancel
+                </Button>
+              </div>
+              {uploading && (
+                <div className="space-y-2 rounded-md border border-border p-3">
+                  <div className="flex items-center justify-between text-sm">
+                    <span>Processing time: {processingSeconds}s</span>
+                    <span>{processingProgress}%</span>
+                  </div>
+                  <Progress value={processingProgress} />
+                </div>
+              )}
             </div>
           )}
         </div>

@@ -10,7 +10,6 @@ import {
 
 interface HourlyAnalyticsEntry {
   hour?: string;
-  second?: number;
   personCount?: number;
   detections: number;
   uploads: number;

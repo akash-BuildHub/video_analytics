@@ -9,8 +9,26 @@ interface ApiResponse<T> {
 
 interface UploadResponse {
   message: string;
-  total_person_count: number;
-  processed_video: string;
+  job_id: string;
+  status: "processing";
+  frame_stride: number;
+}
+
+interface UploadJobStatus {
+  job_id: string;
+  record_id: string;
+  video_name: string;
+  status: "processing" | "completed" | "failed";
+  progress: number;
+  frame_stride?: number;
+  processed_frames?: number;
+  total_frames?: number;
+  total_person_count?: number;
+  processed_video?: string;
+  error?: string;
+  started_at?: string;
+  updated_at?: string;
+  completed_at?: string;
 }
 
 interface AnalyticsData {
@@ -75,11 +93,16 @@ export async function uploadVideo(file: File): Promise<UploadResponse> {
     throw new Error(result?.detail || `API Error: ${response.status} ${response.statusText}`);
   }
 
-  if (result?.processed_video && !result.processed_video.startsWith("http")) {
-    result.processed_video = `${API_BASE_URL}${result.processed_video}`;
-  }
-
   return result as UploadResponse;
+}
+
+export async function getUploadJobStatus(jobId: string): Promise<UploadJobStatus> {
+  const response = await apiRequest<UploadJobStatus>(`/api/jobs/${jobId}`);
+  const data = response.data;
+  if (data?.processed_video && !data.processed_video.startsWith("http")) {
+    data.processed_video = `${API_BASE_URL}${data.processed_video}`;
+  }
+  return data;
 }
 
 export { API_BASE_URL };
@@ -114,4 +137,4 @@ export async function deleteVideo(videoId: string): Promise<void> {
   }
 }
 
-export type { ApiResponse, UploadResponse, AnalyticsData, VideoDetails };
+export type { ApiResponse, UploadResponse, UploadJobStatus, AnalyticsData, VideoDetails };
